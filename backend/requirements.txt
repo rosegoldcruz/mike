@@ -1,0 +1,10 @@
+# Cabinet Bidding Dashboard — Backend Dependencies (Production)
+# Pin exact versions for reproducible builds
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+gunicorn==23.0.0
+pandas==2.2.3
+pydantic==2.11.1
+python-multipart==0.0.20
+PyPDF2==3.0.1
+openpyxl==3.1.5

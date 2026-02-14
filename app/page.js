@@ -28,7 +28,39 @@ import {
   Minus,
 } from "lucide-react";
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+// ── Connection Status Component ──────────────────────────────────
+function ConnectionStatus() {
+  const [status, setStatus] = useState("checking");
+
+  useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/health`);
+        setStatus(res.ok ? "connected" : "disconnected");
+      } catch {
+        setStatus("disconnected");
+      }
+    };
+
+    checkHealth();
+    const interval = setInterval(checkHealth, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  if (status === "checking") return null;
+
+  return (
+    <div className={`fixed bottom-4 right-4 px-3 py-1.5 rounded-full text-xs font-medium flex items-center gap-2 border shadow-lg backdrop-blur-sm z-50 ${status === "connected"
+      ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+      : "bg-rose-500/10 border-rose-500/20 text-rose-400"
+      }`}>
+      <div className={`w-2 h-2 rounded-full ${status === "connected" ? "bg-emerald-400 animate-pulse" : "bg-rose-400"}`} />
+      {status === "connected" ? "System Online" : "Backend Offline"}
+    </div>
+  );
+}
 
 // ── NumberStepper: Fast up/down arrows with acceleration on hold ──
 function NumberStepper({ value, onChange, min = 0, max = 99999, step = 1, precision = 2, label, icon, unit = "", id }) {
@@ -131,6 +163,7 @@ export default function CabinetBiddingDashboard() {
   const [includeInstall, setIncludeInstall] = useState(false);
   const [quoteResult, setQuoteResult] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   const [parseStatus, setParseStatus] = useState(null);
   const [autoCalc, setAutoCalc] = useState(true);
@@ -201,6 +234,7 @@ export default function CabinetBiddingDashboard() {
     }
 
     setLoading(true);
+    setError(null);
     try {
       const res = await fetch(`${API_BASE}/api/quote`, {
         method: "POST",
@@ -219,10 +253,16 @@ export default function CabinetBiddingDashboard() {
           discount_pct: discountPct,
         }),
       });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ detail: "Calculation failed" }));
+        throw new Error(errData.detail || "Calculation failed");
+      }
       const data = await res.json();
       setQuoteResult(data);
     } catch (e) {
       console.error("Quote calculation failed:", e);
+      setError(e.message);
+      setQuoteResult(null);
     } finally {
       setLoading(false);
     }
@@ -398,6 +438,17 @@ export default function CabinetBiddingDashboard() {
           <span className="badge badge-amber">v2.0</span>
         </div>
       </header>
+
+      {/* Error Alert */}
+      {error && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-4 flex items-center gap-3 px-4 py-3 bg-rose-500/10 border border-rose-500/20 text-rose-200 rounded-xl backdrop-blur-md shadow-xl max-w-md w-full">
+          <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" />
+          <p className="text-sm font-medium">{error}</p>
+          <button onClick={() => setError(null)} className="ml-auto hover:text-white">
+            <Minus size={16} />
+          </button>
+        </div>
+      )}
 
       {/* ── GLOBAL SELECTORS ──────────────────────────────────── */}
       <section className="glass-card p-6 mb-6 fade-in-up" id="project-setup">
@@ -664,6 +715,8 @@ export default function CabinetBiddingDashboard() {
       {quoteResult && (
         <section className="glass-card p-6 mb-6 fade-in-up border-amber-500/20 relative overflow-hidden" id="grand-total-hero">
           <div className="absolute inset-0 bg-gradient-to-r from-amber-500/5 via-transparent to-emerald-500/5" />
+
+
           <div className="relative z-10 flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 rounded-2xl bg-amber-500/15 flex items-center justify-center pulse-glow">
