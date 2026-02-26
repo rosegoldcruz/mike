@@ -1,0 +1,4 @@
+services:
+  backend:
+    environment:
+      - CORS_ORIGINS=https://refacekit.sbs,https://www.refacekit.sbs

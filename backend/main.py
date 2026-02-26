@@ -15,6 +15,7 @@ import math
 import time
 import logging
 import hashlib
+import urllib.request
 from datetime import datetime, timezone
 from typing import Optional, List
 from contextlib import asynccontextmanager
@@ -38,8 +39,15 @@ INSTALL_PER_BOX = 79.0
 MAX_ITEMS_PER_REQUEST = 500  # Guard against absurdly large payloads
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ALBERT_CSV = os.path.join(BASE_DIR, "Albert_Master_Definitive.csv")
-HCI_CSV = os.path.join(BASE_DIR, "HCI_Master_Definitive.csv")
+
+def _env_path(name: str, default_filename: str) -> str:
+    return os.environ.get(name, os.path.join(BASE_DIR, default_filename))
+
+ALBERT_CSV = _env_path("ALBERT_CSV_PATH", "Albert_Master_Definitive.csv")
+HCI_CSV = _env_path("HCI_CSV_PATH", "HCI_Master_Definitive.csv")
+
+ALBERT_CSV_URL = os.environ.get("ALBERT_CSV_URL")
+HCI_CSV_URL = os.environ.get("HCI_CSV_URL")
 
 # ─── Data Loading & Integrity ────────────────────────────────────────────────────
 def file_checksum(path: str) -> str:
@@ -50,12 +58,23 @@ def file_checksum(path: str) -> str:
             h.update(chunk)
     return h.hexdigest()[:16]
 
+def _download_if_needed(path: str, url: str | None, label: str):
+    if os.path.isfile(path):
+        return
+    if not url:
+        logger.critical("FATAL: %s CSV not found at %s and no %s_CSV_URL provided", label, path, label.upper())
+        sys.exit(1)
+    logger.info("Downloading %s CSV from %s -> %s", label, url, path)
+    try:
+        urllib.request.urlretrieve(url, path)
+    except Exception as e:
+        logger.critical("FATAL: failed downloading %s CSV: %s", label, e)
+        sys.exit(1)
+
 def load_csv_data():
     """Load and validate both CSV datasets.  Aborts if data is corrupt."""
-    for path, label in [(ALBERT_CSV, "Albert"), (HCI_CSV, "HCI")]:
-        if not os.path.isfile(path):
-            logger.critical("FATAL: %s CSV not found at %s", label, path)
-            sys.exit(1)
+    _download_if_needed(ALBERT_CSV, ALBERT_CSV_URL, "Albert")
+    _download_if_needed(HCI_CSV, HCI_CSV_URL, "HCI")
     
     albert_df = pd.read_csv(ALBERT_CSV)
     hci_df = pd.read_csv(HCI_CSV)
@@ -85,6 +104,23 @@ def load_csv_data():
     return albert_df, hci_df
 
 albert_df, hci_df = load_csv_data()
+
+def build_price_maps(df: pd.DataFrame):
+    finishes = [c for c in df.columns if c != "SKU"]
+    sku_list = df["SKU"].astype(str).str.strip().tolist()
+    sku_set = set(sku_list)
+    price_by_finish = {}
+    sku_indexed = df.set_index("SKU")
+    for finish in finishes:
+        series = sku_indexed[finish]
+        price_by_finish[finish] = {
+            k: float(v) if pd.notna(v) and str(v).strip() != "" else 0.0
+            for k, v in series.items()
+        }
+    return sku_list, sku_set, price_by_finish, finishes
+
+ALBERT_SKUS, ALBERT_SKU_SET, ALBERT_PRICE_MAP, ALBERT_FINISHES = build_price_maps(albert_df)
+HCI_SKUS, HCI_SKU_SET, HCI_PRICE_MAP, HCI_FINISHES = build_price_maps(hci_df)
 
 # Build SKU nomenclature mappings for Albert (Frameless)
 def build_albert_sku_map(df):
@@ -124,7 +160,10 @@ app = FastAPI(
 )
 
 # CORS — allow localhost origins for dev + production, no wildcard
-ALLOWED_ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
+ALLOWED_ORIGINS = os.environ.get(
+    "CORS_ORIGINS",
+    "https://mike.yourdomain.com,https://www.mike.yourdomain.com",
+).split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -280,22 +319,23 @@ def is_box_sku(sku: str) -> bool:
 def resolve_sku(sku: str, brand: str, df: pd.DataFrame) -> str:
     """Resolve a SKU, trying exact match then Albert FD mapping."""
     clean = sku.strip()
-    if clean in df['SKU'].values:
+    sku_values = ALBERT_SKU_SET if brand == "Frameless" else HCI_SKU_SET
+    if clean in sku_values:
         return clean
     # Try with asterisk prefix for special items
-    if f"*{clean}" in df['SKU'].values:
+    if f"*{clean}" in sku_values:
         return f"*{clean}"
     # Albert-specific: try FD/FHD suffix
     if brand == "Frameless":
         if clean in albert_sku_map:
             return albert_sku_map[clean]
-        if f"{clean}FD" in df['SKU'].values:
+        if f"{clean}FD" in sku_values:
             return f"{clean}FD"
-        if f"{clean}FHD" in df['SKU'].values:
+        if f"{clean}FHD" in sku_values:
             return f"{clean}FHD"
     # HCI-specific: try FHD suffix
     if brand == "Framed":
-        if f"{clean}FHD" in df['SKU'].values:
+        if f"{clean}FHD" in sku_values:
             return f"{clean}FHD"
     return clean  # Return original if no resolution found
 
@@ -303,12 +343,10 @@ def resolve_sku(sku: str, brand: str, df: pd.DataFrame) -> str:
 @app.get("/api/brands")
 def get_brands():
     """Return available brands and their finishes."""
-    albert_finishes = [c for c in albert_df.columns if c != 'SKU']
-    hci_finishes = [c for c in hci_df.columns if c != 'SKU']
     return {
         "brands": [
-            {"name": "Frameless", "label": "Frameless (Albert)", "finishes": albert_finishes},
-            {"name": "Framed", "label": "Framed (HCI)", "finishes": hci_finishes},
+            {"name": "Frameless", "label": "Frameless (Albert)", "finishes": ALBERT_FINISHES},
+            {"name": "Framed", "label": "Framed (HCI)", "finishes": HCI_FINISHES},
         ]
     }
 
@@ -317,8 +355,7 @@ def get_skus(brand: str):
     """Return all SKUs for a given brand."""
     if brand not in ("Frameless", "Framed"):
         raise HTTPException(status_code=400, detail="Brand must be 'Frameless' or 'Framed'")
-    df = albert_df if brand == "Frameless" else hci_df
-    skus = df['SKU'].tolist()
+    skus = ALBERT_SKUS if brand == "Frameless" else HCI_SKUS
     return {"skus": skus}
 
 @app.post("/api/quote", response_model=QuoteResult)
@@ -336,6 +373,8 @@ def calculate_quote(request: QuoteRequest):
         grand_total     = bid_price − discount_amount
     """
     df = albert_df if request.brand == "Frameless" else hci_df
+    price_map = ALBERT_PRICE_MAP if request.brand == "Frameless" else HCI_PRICE_MAP
+    sku_set = ALBERT_SKU_SET if request.brand == "Frameless" else HCI_SKU_SET
     margin = request.margin / 100.0
     finish = request.finish
 
@@ -348,15 +387,8 @@ def calculate_quote(request: QuoteRequest):
 
     for item in request.items:
         resolved = resolve_sku(item.sku, request.brand, df)
-        found = resolved in df['SKU'].values
-        unit_price = 0.0
-        
-        if found:
-            price_val = df.loc[df['SKU'] == resolved, finish].values[0]
-            try:
-                unit_price = float(price_val) if pd.notna(price_val) and str(price_val).strip() != '' else 0.0
-            except (ValueError, TypeError):
-                unit_price = 0.0
+        found = resolved in sku_set
+        unit_price = price_map[finish].get(resolved, 0.0) if found else 0.0
 
         line_total = unit_price * item.quantity
         total_list += line_total
@@ -413,7 +445,7 @@ def calculate_quote(request: QuoteRequest):
     )
 
 # ─── File Upload / Vision AI ────────────────────────────────────────────────────
-ALL_SKUS = set(albert_df['SKU'].tolist() + hci_df['SKU'].tolist())
+ALL_SKUS = ALBERT_SKU_SET | HCI_SKU_SET
 SKU_PATTERN = re.compile(
     r'\b('
     r'(?:\*)?'  # optional asterisk
