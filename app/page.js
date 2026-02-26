@@ -159,13 +159,14 @@ export default function CabinetBiddingDashboard() {
   const [finishes, setFinishes] = useState([]);
   const [selectedFinish, setSelectedFinish] = useState("");
   const [margin, setMargin] = useState(0);
-  const [skuText, setSkuText] = useState("# Paste SKU list (Format: SKU, Qty)\nB12, 1\nSB36, 1\nW3030, 2");
+  const [skuText, setSkuText] = useState("");
   const [includeInstall, setIncludeInstall] = useState(false);
   const [quoteResult, setQuoteResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   const [parseStatus, setParseStatus] = useState(null);
+  const [parseMeta, setParseMeta] = useState(null);
   const [autoCalc, setAutoCalc] = useState(true);
   const fileInputRef = useRef(null);
   const debounceRef = useRef(null);
@@ -281,6 +282,7 @@ export default function CabinetBiddingDashboard() {
   // ── File Drop/Upload ───────────────────────────────────────────
   const handleFileParse = async (file) => {
     setParseStatus("parsing");
+    setParseMeta(null);
     const formData = new FormData();
     formData.append("file", file);
     try {
@@ -291,8 +293,18 @@ export default function CabinetBiddingDashboard() {
       const data = await res.json();
       if (data.sku_lines && data.sku_lines.length > 0) {
         setSkuText(data.sku_lines.join("\n"));
+        setParseMeta({
+          totalFound: data.total_found || 0,
+          uniqueSkus: Object.keys(data.found_skus || {}).length,
+          method: data.method || "AI Extraction",
+        });
         setParseStatus("success");
       } else {
+        setParseMeta({
+          totalFound: data.total_found || 0,
+          uniqueSkus: 0,
+          method: data.method || "Unknown",
+        });
         setParseStatus("empty");
       }
       setTimeout(() => setParseStatus(null), 3000);
@@ -416,6 +428,9 @@ export default function CabinetBiddingDashboard() {
       currency: "USD",
     }).format(n || 0);
 
+  const parsedItemsCount = parseSkuItems(skuText).length;
+  const hasExtractedCabinets = parsedItemsCount > 0;
+
   // ── Render ─────────────────────────────────────────────────────
   return (
     <main className="relative z-10 max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-6">
@@ -450,6 +465,39 @@ export default function CabinetBiddingDashboard() {
         </div>
       )}
 
+      {/* ── WORKFLOW GUIDE ─────────────────────────────────────── */}
+      <section className="glass-card p-5 mb-6 fade-in-up border-sky-500/20">
+        <div className="flex items-center gap-2 mb-3">
+          <div className="w-8 h-8 rounded-lg bg-sky-500/10 flex items-center justify-center">
+            <Sparkles size={18} className="text-sky-400" />
+          </div>
+          <h2 className="text-lg font-bold text-slate-100">4-Step Bid Workflow</h2>
+          <span className="badge badge-sky ml-2">Built for Teams</span>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 text-sm">
+          <div className={`rounded-xl border p-3 ${hasExtractedCabinets ? "border-emerald-500/20 bg-emerald-500/5" : "border-slate-800 bg-slate-900/40"}`}>
+            <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">Step 1</div>
+            <div className="font-semibold text-slate-100">Upload Plans / PDFs</div>
+            <div className="text-slate-500 text-xs mt-1">Drop Builders Connected files, PDFs, or images.</div>
+          </div>
+          <div className={`rounded-xl border p-3 ${quoteResult ? "border-emerald-500/20 bg-emerald-500/5" : "border-slate-800 bg-slate-900/40"}`}>
+            <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">Step 2</div>
+            <div className="font-semibold text-slate-100">AI Extracts Cabinets</div>
+            <div className="text-slate-500 text-xs mt-1">See cabinet count + extracted receipt totals before pricing tweaks.</div>
+          </div>
+          <div className={`rounded-xl border p-3 ${hasExtractedCabinets ? "border-amber-500/20 bg-amber-500/5" : "border-slate-800 bg-slate-900/40 opacity-60"}`}>
+            <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">Step 3</div>
+            <div className="font-semibold text-slate-100">Adjust Multipliers</div>
+            <div className="text-slate-500 text-xs mt-1">Install, shipping, margin, discount, and overrides.</div>
+          </div>
+          <div className={`rounded-xl border p-3 ${quoteResult ? "border-amber-500/20 bg-amber-500/5" : "border-slate-800 bg-slate-900/40 opacity-60"}`}>
+            <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">Step 4</div>
+            <div className="font-semibold text-slate-100">Export Quote</div>
+            <div className="text-slate-500 text-xs mt-1">Finalize and send the bid when pricing is set.</div>
+          </div>
+        </div>
+      </section>
+
       {/* ── GLOBAL SELECTORS ──────────────────────────────────── */}
       <section className="glass-card p-6 mb-6 fade-in-up" id="project-setup">
         <div className="flex items-center gap-2 mb-5">
@@ -457,6 +505,7 @@ export default function CabinetBiddingDashboard() {
             <Layers size={18} className="text-amber-400" />
           </div>
           <h2 className="text-lg font-bold text-slate-100">Project Setup</h2>
+          <span className="badge badge-amber ml-2">Step 1</span>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
@@ -545,12 +594,21 @@ export default function CabinetBiddingDashboard() {
       </section>
 
       {/* ── GLOBAL VARIABLES & OVERRIDES ───────────────────────── */}
-      <section className="glass-card p-6 mb-6 fade-in-up" id="rate-overrides">
+      <section className={`glass-card p-6 mb-6 fade-in-up relative ${!hasExtractedCabinets ? "opacity-70" : ""}`} id="rate-overrides">
+        {!hasExtractedCabinets && (
+          <div className="absolute inset-0 z-10 rounded-2xl bg-slate-950/35 backdrop-blur-[1px] flex items-center justify-center p-4">
+            <div className="text-center max-w-md">
+              <div className="text-sm font-semibold text-slate-200">Step 3 unlocks after Step 1 upload</div>
+              <div className="text-xs text-slate-400 mt-1">Upload plans and let AI extract cabinets first. Then tune install, margin, and discounts.</div>
+            </div>
+          </div>
+        )}
         <div className="flex items-center gap-2 mb-5">
           <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
             <Settings2 size={18} className="text-purple-400" />
           </div>
-          <h2 className="text-lg font-bold text-slate-100">Global Variables & Overrides</h2>
+          <h2 className="text-lg font-bold text-slate-100">Pricing Controls & Overrides</h2>
+          <span className="badge badge-purple ml-2">Step 3</span>
           <span className="badge badge-sky ml-2">Tariffs • Rates • Costs</span>
         </div>
         <p className="text-xs text-slate-500 mb-4">
@@ -639,7 +697,10 @@ export default function CabinetBiddingDashboard() {
       </section>
 
       {/* ── MARGIN + DISCOUNT SLIDERS ─────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+      <div className={`grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6 relative ${!hasExtractedCabinets ? "opacity-70" : ""}`}>
+        {!hasExtractedCabinets && (
+          <div className="absolute inset-0 z-10 rounded-2xl bg-slate-950/25" />
+        )}
         {/* Margin Slider */}
         <section className="glass-card p-6 fade-in-up" id="margin-slider">
           <div className="flex items-center justify-between mb-4">
@@ -724,6 +785,7 @@ export default function CabinetBiddingDashboard() {
               </div>
               <div>
                 <div className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Grand Total Bid</div>
+                <div className="text-[10px] text-slate-500 uppercase tracking-[0.2em] mt-1">Step 4 • Final Quote</div>
                 <div className="text-4xl sm:text-5xl font-black text-amber-400 tabular-nums tracking-tight">
                   {fmt(quoteResult.grand_total)}
                 </div>
@@ -741,47 +803,15 @@ export default function CabinetBiddingDashboard() {
 
       {/* ── INPUT & VISION AI ─────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-        {/* SKU Input */}
-        <section className="glass-card p-6 fade-in-up" id="sku-input">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="w-8 h-8 rounded-lg bg-sky-500/10 flex items-center justify-center">
-              <FileText size={18} className="text-sky-400" />
-            </div>
-            <h2 className="text-lg font-bold text-slate-100">SKU Configuration</h2>
-          </div>
-          <textarea
-            id="sku-textarea"
-            className="sku-textarea"
-            rows={12}
-            value={skuText}
-            onChange={(e) => setSkuText(e.target.value)}
-            placeholder="# Paste SKU list (Format: SKU, Qty)&#10;B12, 1&#10;SB36, 1&#10;W3030, 2"
-          />
-          <div className="flex items-center gap-3 mt-3">
-            {!autoCalc && (
-              <button onClick={calculateQuote} className="btn-primary" id="run-quote-btn">
-                <Calculator size={16} />
-                Run Quote
-              </button>
-            )}
-            <button onClick={exportPDF} className="btn-secondary" id="export-pdf-btn" disabled={!quoteResult}>
-              <Download size={16} />
-              Export PDF
-            </button>
-            <div className="ml-auto text-xs text-slate-500">
-              {parseSkuItems(skuText).length} items parsed
-            </div>
-          </div>
-        </section>
-
-        {/* Vision AI Upload */}
+        {/* Vision AI Upload (Primary Input) */}
         <section className="glass-card p-6 fade-in-up" id="vision-upload">
           <div className="flex items-center gap-2 mb-4">
             <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
               <Eye size={18} className="text-purple-400" />
             </div>
             <h2 className="text-lg font-bold text-slate-100">Vision AI Upload</h2>
-            <span className="badge badge-sky ml-2">Beta</span>
+            <span className="badge badge-amber ml-2">Step 1A</span>
+            <span className="badge badge-sky ml-2">Primary Workflow</span>
           </div>
           <div
             className={`dropzone ${dragOver ? "drag-over" : ""}`}
@@ -817,7 +847,7 @@ export default function CabinetBiddingDashboard() {
               )}
               {parseStatus === "success" && (
                 <div className="flex items-center gap-2 text-emerald-400 text-sm">
-                  <CheckCircle2 size={16} /> SKUs extracted & populated!
+                  <CheckCircle2 size={16} /> Cabinets extracted and quote updated.
                 </div>
               )}
               {parseStatus === "empty" && (
@@ -832,12 +862,69 @@ export default function CabinetBiddingDashboard() {
               )}
             </div>
           </div>
+          {parseMeta && (
+            <div className="mt-4 grid grid-cols-3 gap-3">
+              <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
+                <div className="text-[11px] uppercase tracking-wider text-slate-500">Cabinets / Units</div>
+                <div className="text-lg font-bold text-slate-100 tabular-nums">{parseMeta.totalFound}</div>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
+                <div className="text-[11px] uppercase tracking-wider text-slate-500">Unique SKUs</div>
+                <div className="text-lg font-bold text-slate-100 tabular-nums">{parseMeta.uniqueSkus}</div>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
+                <div className="text-[11px] uppercase tracking-wider text-slate-500">Extracted By</div>
+                <div className="text-sm font-semibold text-sky-300 truncate">{parseMeta.method}</div>
+              </div>
+            </div>
+          )}
           <div className="mt-4 p-4 rounded-xl bg-slate-900/50 border border-slate-800">
             <p className="text-xs text-slate-500 leading-relaxed">
               <Sparkles size={12} className="inline mr-1 text-purple-400" />
               Vision AI scans your elevation drawings for cabinet codes (e.g. B12, SB36, W3030)
-              and automatically fills the SKU input. Supports PDF text extraction and OCR for image files.
+              and automatically builds the cabinet list + quote. Manual SKU editing is optional.
             </p>
+            <p className="text-xs text-slate-600 leading-relaxed mt-2">
+              Toe kick / scribe / crown auto-ordering by run length is not fully automated yet. That requires plan-geometry extraction (run lengths) beyond SKU counting.
+            </p>
+          </div>
+        </section>
+
+        {/* SKU Input (Optional Override) */}
+        <section className="glass-card p-6 fade-in-up" id="sku-input">
+          <div className="flex items-center gap-2 mb-2">
+            <div className="w-8 h-8 rounded-lg bg-sky-500/10 flex items-center justify-center">
+              <FileText size={18} className="text-sky-400" />
+            </div>
+            <h2 className="text-lg font-bold text-slate-100">Extracted Cabinet List</h2>
+            <span className="badge badge-amber ml-2">Step 1B</span>
+            <span className="badge badge-purple ml-2">Optional Manual Edit</span>
+          </div>
+          <p className="text-xs text-slate-500 mb-4">
+            Upload a PDF first. This list auto-populates from Vision AI and only needs edits if extraction misses something.
+          </p>
+          <textarea
+            id="sku-textarea"
+            className="sku-textarea"
+            rows={12}
+            value={skuText}
+            onChange={(e) => setSkuText(e.target.value)}
+            placeholder="# Cabinet list will populate here after PDF extraction (Format: SKU, Qty)"
+          />
+          <div className="flex items-center gap-3 mt-3">
+            {!autoCalc && (
+              <button onClick={calculateQuote} className="btn-primary" id="run-quote-btn">
+                <Calculator size={16} />
+                Run Quote
+              </button>
+            )}
+            <button onClick={exportPDF} className="btn-secondary" id="export-pdf-btn" disabled={!quoteResult}>
+              <Download size={16} />
+              Export PDF
+            </button>
+            <div className="ml-auto text-xs text-slate-500">
+              {parsedItemsCount} items parsed
+            </div>
           </div>
         </section>
       </div>
@@ -849,7 +936,8 @@ export default function CabinetBiddingDashboard() {
             <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center">
               <BarChart3 size={18} className="text-emerald-400" />
             </div>
-            <h2 className="text-lg font-bold text-slate-100">Cost Breakdown</h2>
+            <h2 className="text-lg font-bold text-slate-100">AI Extraction Receipt (Cabinet Totals)</h2>
+            <span className="badge badge-emerald ml-2">Step 2</span>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-4">
