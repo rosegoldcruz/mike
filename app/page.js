@@ -167,6 +167,7 @@ export default function CabinetBiddingDashboard() {
   const [dragOver, setDragOver] = useState(false);
   const [parseStatus, setParseStatus] = useState(null);
   const [parseMeta, setParseMeta] = useState(null);
+  const [parseError, setParseError] = useState("");
   const [autoCalc, setAutoCalc] = useState(true);
   const fileInputRef = useRef(null);
   const debounceRef = useRef(null);
@@ -283,6 +284,7 @@ export default function CabinetBiddingDashboard() {
   const handleFileParse = async (file) => {
     setParseStatus("parsing");
     setParseMeta(null);
+    setParseError("");
     const formData = new FormData();
     formData.append("file", file);
     try {
@@ -290,25 +292,30 @@ export default function CabinetBiddingDashboard() {
         method: "POST",
         body: formData,
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: "Upload failed" }));
+        throw new Error(err.detail || "Upload failed");
+      }
       const data = await res.json();
       if (data.sku_lines && data.sku_lines.length > 0) {
         setSkuText(data.sku_lines.join("\n"));
         setParseMeta({
           totalFound: data.total_found || 0,
           uniqueSkus: Object.keys(data.found_skus || {}).length,
-          method: data.method || "AI Extraction",
+          method: `${data.method || "AI Extraction"}${data.parsed_sources ? ` • ${data.parsed_sources} file(s)` : ""}`,
         });
         setParseStatus("success");
       } else {
         setParseMeta({
           totalFound: data.total_found || 0,
           uniqueSkus: 0,
-          method: data.method || "Unknown",
+          method: `${data.method || "Unknown"}${data.parsed_sources ? ` • ${data.parsed_sources} file(s)` : ""}`,
         });
         setParseStatus("empty");
       }
       setTimeout(() => setParseStatus(null), 3000);
-    } catch {
+    } catch (e) {
+      setParseError(e?.message || "Error parsing file");
       setParseStatus("error");
       setTimeout(() => setParseStatus(null), 3000);
     }
@@ -593,6 +600,134 @@ export default function CabinetBiddingDashboard() {
         </div>
       </section>
 
+      {/* ── INPUT & VISION AI ─────────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        {/* Vision AI Upload (Primary Input) */}
+        <section className="glass-card p-6 fade-in-up" id="vision-upload">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
+              <Eye size={18} className="text-purple-400" />
+            </div>
+            <h2 className="text-lg font-bold text-slate-100">Vision AI Upload</h2>
+            <span className="badge badge-amber ml-2">Step 1A</span>
+            <span className="badge badge-sky ml-2">Primary Workflow</span>
+          </div>
+          <div
+            className={`dropzone ${dragOver ? "drag-over" : ""}`}
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,.jpg,.jpeg,.png,.bmp,.tiff,.txt,.csv,.zip"
+              className="hidden"
+              onChange={handleFileInput}
+              id="file-input"
+            />
+            <div className="flex flex-col items-center gap-3">
+              <div className="w-14 h-14 rounded-2xl bg-sky-500/10 flex items-center justify-center">
+                <Upload size={28} className="text-sky-400" />
+              </div>
+              <div>
+                <p className="text-slate-200 font-semibold">
+                  Drop PDF / JPG elevations here
+                </p>
+                <p className="text-slate-500 text-sm mt-1">
+                  or click to browse • PDF, JPG, PNG, TXT, CSV, ZIP
+                </p>
+              </div>
+              {parseStatus === "parsing" && (
+                <div className="flex items-center gap-2 text-amber-400 text-sm">
+                  <div className="spinner" /> Parsing file...
+                </div>
+              )}
+              {parseStatus === "success" && (
+                <div className="flex items-center gap-2 text-emerald-400 text-sm">
+                  <CheckCircle2 size={16} /> Cabinets extracted and quote updated.
+                </div>
+              )}
+              {parseStatus === "empty" && (
+                <div className="flex items-center gap-2 text-amber-400 text-sm">
+                  <AlertCircle size={16} /> No cabinet codes found in file
+                </div>
+              )}
+              {parseStatus === "error" && (
+                <div className="flex items-center gap-2 text-rose-400 text-sm">
+                  <AlertCircle size={16} /> {parseError || "Error parsing file"}
+                </div>
+              )}
+            </div>
+          </div>
+          {parseMeta && (
+            <div className="mt-4 grid grid-cols-3 gap-3">
+              <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
+                <div className="text-[11px] uppercase tracking-wider text-slate-500">Cabinets / Units</div>
+                <div className="text-lg font-bold text-slate-100 tabular-nums">{parseMeta.totalFound}</div>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
+                <div className="text-[11px] uppercase tracking-wider text-slate-500">Unique SKUs</div>
+                <div className="text-lg font-bold text-slate-100 tabular-nums">{parseMeta.uniqueSkus}</div>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
+                <div className="text-[11px] uppercase tracking-wider text-slate-500">Extracted By</div>
+                <div className="text-sm font-semibold text-sky-300 truncate">{parseMeta.method}</div>
+              </div>
+            </div>
+          )}
+          <div className="mt-4 p-4 rounded-xl bg-slate-900/50 border border-slate-800">
+            <p className="text-xs text-slate-500 leading-relaxed">
+              <Sparkles size={12} className="inline mr-1 text-purple-400" />
+              Vision AI scans your elevation drawings for cabinet codes (e.g. B12, SB36, W3030)
+              and automatically builds the cabinet list + quote. Manual SKU editing is optional.
+            </p>
+            <p className="text-xs text-slate-600 leading-relaxed mt-2">
+              Toe kick / scribe / crown auto-ordering by run length is not fully automated yet. That requires plan-geometry extraction (run lengths) beyond SKU counting.
+            </p>
+          </div>
+        </section>
+
+        {/* SKU Input (Optional Override) */}
+        <section className="glass-card p-6 fade-in-up" id="sku-input">
+          <div className="flex items-center gap-2 mb-2">
+            <div className="w-8 h-8 rounded-lg bg-sky-500/10 flex items-center justify-center">
+              <FileText size={18} className="text-sky-400" />
+            </div>
+            <h2 className="text-lg font-bold text-slate-100">Extracted Cabinet List</h2>
+            <span className="badge badge-amber ml-2">Step 1B</span>
+            <span className="badge badge-purple ml-2">Optional Manual Edit</span>
+          </div>
+          <p className="text-xs text-slate-500 mb-4">
+            Upload a PDF first. This list auto-populates from Vision AI and only needs edits if extraction misses something.
+          </p>
+          <textarea
+            id="sku-textarea"
+            className="sku-textarea"
+            rows={12}
+            value={skuText}
+            onChange={(e) => setSkuText(e.target.value)}
+            placeholder="# Cabinet list will populate here after PDF extraction (Format: SKU, Qty)"
+          />
+          <div className="flex items-center gap-3 mt-3">
+            {!autoCalc && (
+              <button onClick={calculateQuote} className="btn-primary" id="run-quote-btn">
+                <Calculator size={16} />
+                Run Quote
+              </button>
+            )}
+            <button onClick={exportPDF} className="btn-secondary" id="export-pdf-btn" disabled={!quoteResult}>
+              <Download size={16} />
+              Export PDF
+            </button>
+            <div className="ml-auto text-xs text-slate-500">
+              {parsedItemsCount} items parsed
+            </div>
+          </div>
+        </section>
+      </div>
+
       {/* ── GLOBAL VARIABLES & OVERRIDES ───────────────────────── */}
       <section className={`glass-card p-6 mb-6 fade-in-up relative ${!hasExtractedCabinets ? "opacity-70" : ""}`} id="rate-overrides">
         {!hasExtractedCabinets && (
@@ -800,134 +935,6 @@ export default function CabinetBiddingDashboard() {
           </div>
         </section>
       )}
-
-      {/* ── INPUT & VISION AI ─────────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-        {/* Vision AI Upload (Primary Input) */}
-        <section className="glass-card p-6 fade-in-up" id="vision-upload">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
-              <Eye size={18} className="text-purple-400" />
-            </div>
-            <h2 className="text-lg font-bold text-slate-100">Vision AI Upload</h2>
-            <span className="badge badge-amber ml-2">Step 1A</span>
-            <span className="badge badge-sky ml-2">Primary Workflow</span>
-          </div>
-          <div
-            className={`dropzone ${dragOver ? "drag-over" : ""}`}
-            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".pdf,.jpg,.jpeg,.png,.txt,.csv"
-              className="hidden"
-              onChange={handleFileInput}
-              id="file-input"
-            />
-            <div className="flex flex-col items-center gap-3">
-              <div className="w-14 h-14 rounded-2xl bg-sky-500/10 flex items-center justify-center">
-                <Upload size={28} className="text-sky-400" />
-              </div>
-              <div>
-                <p className="text-slate-200 font-semibold">
-                  Drop PDF / JPG elevations here
-                </p>
-                <p className="text-slate-500 text-sm mt-1">
-                  or click to browse • PDF, JPG, PNG, TXT
-                </p>
-              </div>
-              {parseStatus === "parsing" && (
-                <div className="flex items-center gap-2 text-amber-400 text-sm">
-                  <div className="spinner" /> Parsing file...
-                </div>
-              )}
-              {parseStatus === "success" && (
-                <div className="flex items-center gap-2 text-emerald-400 text-sm">
-                  <CheckCircle2 size={16} /> Cabinets extracted and quote updated.
-                </div>
-              )}
-              {parseStatus === "empty" && (
-                <div className="flex items-center gap-2 text-amber-400 text-sm">
-                  <AlertCircle size={16} /> No cabinet codes found in file
-                </div>
-              )}
-              {parseStatus === "error" && (
-                <div className="flex items-center gap-2 text-rose-400 text-sm">
-                  <AlertCircle size={16} /> Error parsing file
-                </div>
-              )}
-            </div>
-          </div>
-          {parseMeta && (
-            <div className="mt-4 grid grid-cols-3 gap-3">
-              <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
-                <div className="text-[11px] uppercase tracking-wider text-slate-500">Cabinets / Units</div>
-                <div className="text-lg font-bold text-slate-100 tabular-nums">{parseMeta.totalFound}</div>
-              </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
-                <div className="text-[11px] uppercase tracking-wider text-slate-500">Unique SKUs</div>
-                <div className="text-lg font-bold text-slate-100 tabular-nums">{parseMeta.uniqueSkus}</div>
-              </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
-                <div className="text-[11px] uppercase tracking-wider text-slate-500">Extracted By</div>
-                <div className="text-sm font-semibold text-sky-300 truncate">{parseMeta.method}</div>
-              </div>
-            </div>
-          )}
-          <div className="mt-4 p-4 rounded-xl bg-slate-900/50 border border-slate-800">
-            <p className="text-xs text-slate-500 leading-relaxed">
-              <Sparkles size={12} className="inline mr-1 text-purple-400" />
-              Vision AI scans your elevation drawings for cabinet codes (e.g. B12, SB36, W3030)
-              and automatically builds the cabinet list + quote. Manual SKU editing is optional.
-            </p>
-            <p className="text-xs text-slate-600 leading-relaxed mt-2">
-              Toe kick / scribe / crown auto-ordering by run length is not fully automated yet. That requires plan-geometry extraction (run lengths) beyond SKU counting.
-            </p>
-          </div>
-        </section>
-
-        {/* SKU Input (Optional Override) */}
-        <section className="glass-card p-6 fade-in-up" id="sku-input">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="w-8 h-8 rounded-lg bg-sky-500/10 flex items-center justify-center">
-              <FileText size={18} className="text-sky-400" />
-            </div>
-            <h2 className="text-lg font-bold text-slate-100">Extracted Cabinet List</h2>
-            <span className="badge badge-amber ml-2">Step 1B</span>
-            <span className="badge badge-purple ml-2">Optional Manual Edit</span>
-          </div>
-          <p className="text-xs text-slate-500 mb-4">
-            Upload a PDF first. This list auto-populates from Vision AI and only needs edits if extraction misses something.
-          </p>
-          <textarea
-            id="sku-textarea"
-            className="sku-textarea"
-            rows={12}
-            value={skuText}
-            onChange={(e) => setSkuText(e.target.value)}
-            placeholder="# Cabinet list will populate here after PDF extraction (Format: SKU, Qty)"
-          />
-          <div className="flex items-center gap-3 mt-3">
-            {!autoCalc && (
-              <button onClick={calculateQuote} className="btn-primary" id="run-quote-btn">
-                <Calculator size={16} />
-                Run Quote
-              </button>
-            )}
-            <button onClick={exportPDF} className="btn-secondary" id="export-pdf-btn" disabled={!quoteResult}>
-              <Download size={16} />
-              Export PDF
-            </button>
-            <div className="ml-auto text-xs text-slate-500">
-              {parsedItemsCount} items parsed
-            </div>
-          </div>
-        </section>
-      </div>
 
       {/* ── COST BREAKDOWN ────────────────────────────────────── */}
       {quoteResult && (

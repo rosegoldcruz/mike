@@ -16,6 +16,7 @@ import time
 import logging
 import hashlib
 import urllib.request
+import zipfile
 from datetime import datetime, timezone
 from typing import Optional, List
 from contextlib import asynccontextmanager
@@ -521,13 +522,48 @@ def parse_with_ai(text: str) -> Optional[dict]:
     return None
 
 
-ALLOWED_UPLOAD_EXTENSIONS = {'.pdf', '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.txt', '.csv'}
-MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
+ALLOWED_UPLOAD_EXTENSIONS = {'.pdf', '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.txt', '.csv', '.zip'}
+PARSABLE_FILE_EXTENSIONS = {'.pdf', '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.txt', '.csv'}
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
+MAX_ZIP_FILES = 80
+MAX_ZIP_EXPANDED_BYTES = 150 * 1024 * 1024  # 150 MB safety cap
+
+def _extract_text_from_content(content_bytes: bytes, ext: str, source_name: str = "") -> str:
+    text = ""
+    if ext == '.pdf':
+        try:
+            from PyPDF2 import PdfReader
+            reader = PdfReader(io.BytesIO(content_bytes))
+            for page in reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+        except ImportError:
+            logger.warning("PyPDF2 not installed — PDF parsing unavailable")
+            text = "PDF parsing unavailable (PyPDF2 not installed)"
+        except Exception as e:
+            logger.error("PDF parse error (%s): %s", source_name or "file", e)
+            text = f"PDF parse error: {e}"
+    elif ext in ('.jpg', '.jpeg', '.png', '.bmp', '.tiff'):
+        try:
+            from PIL import Image
+            import pytesseract
+            image = Image.open(io.BytesIO(content_bytes))
+            text = pytesseract.image_to_string(image)
+        except ImportError:
+            logger.warning("PIL/pytesseract not installed — OCR unavailable")
+            text = "OCR not available. Install Pillow and Tesseract."
+        except Exception as e:
+            logger.error("OCR error (%s): %s", source_name or "file", e)
+            text = f"OCR error: {e}"
+    else:
+        text = content_bytes.decode('utf-8', errors='replace')
+    return text
 
 @app.post("/api/parse-file")
 async def parse_file(file: UploadFile = File(...)):
     """Parse an uploaded file (PDF, JPG, TXT) and extract cabinet codes."""
-    filename = file.filename.lower()
+    filename = (file.filename or "upload").lower()
     ext = os.path.splitext(filename)[1]
     
     if ext not in ALLOWED_UPLOAD_EXTENSIONS:
@@ -539,36 +575,47 @@ async def parse_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=f"File too large. Maximum size is {MAX_UPLOAD_SIZE // (1024*1024)} MB")
 
     text = ""
+    parsed_sources = 1
 
     try:
-        if ext == '.pdf':
-            try:
-                from PyPDF2 import PdfReader
-                reader = PdfReader(io.BytesIO(content_bytes))
-                for page in reader.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text + "\n"
-            except ImportError:
-                logger.warning("PyPDF2 not installed — PDF parsing unavailable")
-                text = "PDF parsing unavailable (PyPDF2 not installed)"
-            except Exception as e:
-                logger.error("PDF parse error: %s", e)
-                text = f"PDF parse error: {e}"
-        elif ext in ('.jpg', '.jpeg', '.png', '.bmp', '.tiff'):
-            try:
-                from PIL import Image
-                import pytesseract
-                image = Image.open(io.BytesIO(content_bytes))
-                text = pytesseract.image_to_string(image)
-            except ImportError:
-                logger.warning("PIL/pytesseract not installed — OCR unavailable")
-                text = "OCR not available. Install Pillow and Tesseract."
-            except Exception as e:
-                logger.error("OCR error: %s", e)
-                text = f"OCR error: {e}"
+        if ext == ".zip":
+            parts = []
+            parsed_sources = 0
+            expanded_total = 0
+            with zipfile.ZipFile(io.BytesIO(content_bytes)) as zf:
+                entries = [i for i in zf.infolist() if not i.is_dir()]
+                if len(entries) > MAX_ZIP_FILES:
+                    raise HTTPException(status_code=400, detail=f"ZIP has too many files ({len(entries)}). Max supported is {MAX_ZIP_FILES}.")
+
+                for entry in entries:
+                    name = entry.filename
+                    inner_ext = os.path.splitext(name.lower())[1]
+                    if inner_ext not in PARSABLE_FILE_EXTENSIONS:
+                        continue
+
+                    expanded_total += entry.file_size
+                    if expanded_total > MAX_ZIP_EXPANDED_BYTES:
+                        raise HTTPException(status_code=400, detail=f"ZIP expanded content too large (>{MAX_ZIP_EXPANDED_BYTES // (1024 * 1024)} MB).")
+
+                    with zf.open(entry, "r") as f:
+                        inner_bytes = f.read()
+                    piece = _extract_text_from_content(inner_bytes, inner_ext, name)
+                    if piece and piece.strip():
+                        parts.append(f"\n\n--- FILE: {name} ---\n{piece}")
+                        parsed_sources += 1
+
+            if parsed_sources == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="ZIP parsed, but no supported files were found. Supported: .pdf, .jpg, .jpeg, .png, .bmp, .tiff, .txt, .csv",
+                )
+            text = "\n".join(parts)
         else:
-            text = content_bytes.decode('utf-8', errors='replace')
+            text = _extract_text_from_content(content_bytes, ext, filename)
+    except HTTPException:
+        raise
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="Uploaded .zip is invalid or corrupted.")
     except Exception as e:
         logger.error("File processing error: %s", e)
         raise HTTPException(status_code=400, detail=f"Error processing file: {e}")
@@ -595,15 +642,16 @@ async def parse_file(file: UploadFile = File(...)):
     # Format for frontend textarea
     sku_lines = [f"{sku}, {qty}" for sku, qty in sku_counts.items()]
 
-    logger.info("PARSE: file=%s size=%dB method=%s extracted=%d SKUs", 
-                filename, len(content_bytes), method, len(sku_counts))
+    logger.info("PARSE: file=%s size=%dB sources=%d method=%s extracted=%d SKUs",
+                filename, len(content_bytes), parsed_sources, method, len(sku_counts))
 
     return {
         "raw_text": text[:2000],
         "found_skus": sku_counts,
         "sku_lines": sku_lines,
         "total_found": sum(sku_counts.values()),
-        "method": method
+        "method": method,
+        "parsed_sources": parsed_sources,
     }
 
 # ─── Health Check ────────────────────────────────────────────────────────────────
