@@ -162,6 +162,8 @@ export default function CabinetBiddingDashboard() {
   const [skuText, setSkuText] = useState("");
   const [includeInstall, setIncludeInstall] = useState(false);
   const [quoteResult, setQuoteResult] = useState(null);
+  const [quoteMode, setQuoteMode] = useState("dual");
+  const [dualBrandQuotes, setDualBrandQuotes] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [dragOver, setDragOver] = useState(false);
@@ -196,11 +198,13 @@ export default function CabinetBiddingDashboard() {
 
     const textUpper = rawText.toUpperCase();
     let brand = "";
-    if (/(FRAMELESS|ALBERT|IMPRESS)/i.test(textUpper)) {
+    if (/\bFRAMELESS\b/i.test(textUpper)) {
       brand = "Frameless";
-    } else if (/(FRAMED|HCI)/i.test(textUpper)) {
+    } else if (/\bFRAMED\b/i.test(textUpper)) {
       brand = "Framed";
     }
+
+    if (!brand) return { brand: "", finish: "" };
 
     const findFinishInBrand = (brandName) => {
       const b = brands.find((x) => x.name === brandName);
@@ -210,23 +214,53 @@ export default function CabinetBiddingDashboard() {
       return ordered.find((f) => textUpper.includes(String(f).toUpperCase())) || "";
     };
 
-    let finish = "";
-    if (brand) {
-      finish = findFinishInBrand(brand);
-      return { brand, finish };
+    return { brand, finish: findFinishInBrand(brand) };
+  }, [brands]);
+
+  const getDefaultFinishForBrand = useCallback((brandName) => {
+    const b = brands.find((x) => x.name === brandName);
+    return b?.finishes?.[0] || "";
+  }, [brands]);
+
+  const calculateDualBrandQuotes = useCallback(async (items) => {
+    const targets = ["Frameless", "Framed"];
+    const next = [];
+
+    for (const brandName of targets) {
+      const finish = getDefaultFinishForBrand(brandName);
+      if (!finish) continue;
+      try {
+        const res = await fetch(`${API_BASE}/api/quote`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            brand: brandName,
+            finish,
+            margin,
+            items,
+            include_install: includeInstall,
+            factor,
+            build_rate: buildRate,
+            shipping_rate: shippingRate,
+            install_rate: installRate,
+            handle_price: handlePrice,
+            discount_pct: discountPct,
+          }),
+        });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({ detail: "Calculation failed" }));
+          throw new Error(errData.detail || "Calculation failed");
+        }
+        const data = await res.json();
+        next.push({ brand: brandName, finish, result: data, error: "" });
+      } catch (e) {
+        next.push({ brand: brandName, finish, result: null, error: e.message || "Calculation failed" });
+      }
     }
 
-    // Fallback: infer brand from a uniquely matched finish name.
-    const framelessFinish = findFinishInBrand("Frameless");
-    const framedFinish = findFinishInBrand("Framed");
-    if (framelessFinish && !framedFinish) {
-      return { brand: "Frameless", finish: framelessFinish };
-    }
-    if (framedFinish && !framelessFinish) {
-      return { brand: "Framed", finish: framedFinish };
-    }
-    return { brand: "", finish: "" };
-  }, [brands]);
+    setDualBrandQuotes(next);
+    setQuoteResult(null);
+  }, [buildRate, discountPct, factor, getDefaultFinishForBrand, handlePrice, includeInstall, installRate, margin, shippingRate]);
 
   // ── Load Brands on Mount ───────────────────────────────────────
   useEffect(() => {
@@ -276,16 +310,21 @@ export default function CabinetBiddingDashboard() {
 
   // ── Calculate Quote ────────────────────────────────────────────
   const calculateQuote = useCallback(async () => {
-    if (!selectedBrand || !selectedFinish) return;
+    if (quoteMode !== "dual" && (!selectedBrand || !selectedFinish)) return;
     const items = parseSkuItems(skuText);
     if (items.length === 0) {
       setQuoteResult(null);
+      setDualBrandQuotes([]);
       return;
     }
 
     setLoading(true);
     setError(null);
     try {
+      if (quoteMode === "dual") {
+        await calculateDualBrandQuotes(items);
+        return;
+      }
       const res = await fetch(`${API_BASE}/api/quote`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -309,14 +348,16 @@ export default function CabinetBiddingDashboard() {
       }
       const data = await res.json();
       setQuoteResult(data);
+      setDualBrandQuotes([]);
     } catch (e) {
       console.error("Quote calculation failed:", e);
       setError(e.message);
       setQuoteResult(null);
+      setDualBrandQuotes([]);
     } finally {
       setLoading(false);
     }
-  }, [selectedBrand, selectedFinish, margin, skuText, includeInstall, factor, buildRate, shippingRate, installRate, handlePrice, discountPct, parseSkuItems]);
+  }, [selectedBrand, selectedFinish, margin, skuText, includeInstall, factor, buildRate, shippingRate, installRate, handlePrice, discountPct, parseSkuItems, quoteMode, calculateDualBrandQuotes]);
 
   // ── Auto-calculate on changes ──────────────────────────────────
   useEffect(() => {
@@ -326,7 +367,7 @@ export default function CabinetBiddingDashboard() {
       calculateQuote();
     }, 300);
     return () => clearTimeout(debounceRef.current);
-  }, [selectedBrand, selectedFinish, margin, skuText, includeInstall, autoCalc, calculateQuote, factor, buildRate, shippingRate, installRate, handlePrice, discountPct]);
+  }, [selectedBrand, selectedFinish, margin, skuText, includeInstall, autoCalc, calculateQuote, factor, buildRate, shippingRate, installRate, handlePrice, discountPct, quoteMode]);
 
   // ── File Drop/Upload ───────────────────────────────────────────
   const handleFileParse = async (file) => {
@@ -354,14 +395,14 @@ export default function CabinetBiddingDashboard() {
         setParseMeta({
           totalFound: data.total_found || 0,
           uniqueSkus: Object.keys(data.found_skus || {}).length,
-          method: `${data.method || "AI Extraction"}${data.parsed_sources ? ` • ${data.parsed_sources} file(s)` : ""}${detected.brand ? ` • ${detected.brand}${detected.finish ? ` / ${detected.finish}` : ""} auto-detected` : ""}`,
+          method: `${data.method || "AI Extraction"}${data.parsed_sources ? ` • ${data.parsed_sources} file(s)` : ""}${detected.brand ? ` • ${detected.brand}${detected.finish ? ` / ${detected.finish}` : ""} explicit` : " • brand not explicit (dual quote mode)"}`,
         });
         setParseStatus("success");
       } else {
         setParseMeta({
           totalFound: data.total_found || 0,
           uniqueSkus: 0,
-          method: `${data.method || "Unknown"}${data.parsed_sources ? ` • ${data.parsed_sources} file(s)` : ""}${detected.brand ? ` • ${detected.brand}${detected.finish ? ` / ${detected.finish}` : ""} auto-detected` : ""}`,
+          method: `${data.method || "Unknown"}${data.parsed_sources ? ` • ${data.parsed_sources} file(s)` : ""}${detected.brand ? ` • ${detected.brand}${detected.finish ? ` / ${detected.finish}` : ""} explicit` : " • brand not explicit"}`,
         });
         setParseStatus("empty");
       }
@@ -958,6 +999,59 @@ export default function CabinetBiddingDashboard() {
           <p className="text-xs text-slate-600 mt-2">Applied after margin — slashes the final bid price</p>
         </section>
       </div>
+
+      {/* ── DUAL QUOTE MODE (NO EXPLICIT FRAME TYPE) ───────────── */}
+      {quoteMode === "dual" && dualBrandQuotes.length > 0 && (
+        <section className="glass-card p-6 mb-6 fade-in-up border-sky-500/20" id="dual-brand-options">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-8 h-8 rounded-lg bg-sky-500/10 flex items-center justify-center">
+              <Layers size={18} className="text-sky-400" />
+            </div>
+            <h2 className="text-lg font-bold text-slate-100">Frame Type Not Explicit — Both Quotes Prepared</h2>
+            <span className="badge badge-sky ml-2">Step 2.5</span>
+          </div>
+          <p className="text-xs text-slate-500 mb-4">
+            The uploaded plans did not explicitly state framed vs frameless. Review both totals and choose the bid path.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {dualBrandQuotes.map((opt) => (
+              <div key={opt.brand} className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <div>
+                    <div className="text-sm font-bold text-slate-100">{opt.brand}</div>
+                    <div className="text-xs text-slate-500">Finish: {opt.finish}</div>
+                  </div>
+                  <span className={`badge ${opt.error ? "badge-rose" : "badge-emerald"}`}>
+                    {opt.error ? "Error" : "Ready"}
+                  </span>
+                </div>
+
+                {opt.error ? (
+                  <div className="text-xs text-rose-300">{opt.error}</div>
+                ) : (
+                  <>
+                    <div className="text-2xl font-black text-amber-400 tabular-nums">{fmt(opt.result.grand_total)}</div>
+                    <div className="text-xs text-slate-500 mt-1">
+                      {opt.result.box_count} boxes • list {fmt(opt.result.total_list_price)}
+                    </div>
+                    <button
+                      onClick={() => {
+                        setQuoteMode("single");
+                        applyBrandFinishSelection(opt.brand, opt.finish);
+                        setQuoteResult(opt.result);
+                        setDualBrandQuotes([]);
+                      }}
+                      className="btn-primary mt-3"
+                    >
+                      Use {opt.brand}
+                    </button>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* ── GRAND TOTAL HERO ──────────────────────────────────── */}
       {quoteResult && (
