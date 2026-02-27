@@ -370,7 +370,7 @@ export default function CabinetBiddingDashboard() {
   }, [selectedBrand, selectedFinish, margin, skuText, includeInstall, autoCalc, calculateQuote, factor, buildRate, shippingRate, installRate, handlePrice, discountPct, quoteMode]);
 
   // ── File Drop/Upload ───────────────────────────────────────────
-  const handleFileParse = async (file) => {
+  const handleFileParse = useCallback(async (file) => {
     setParseStatus("parsing");
     setParseMeta(null);
     setParseError("");
