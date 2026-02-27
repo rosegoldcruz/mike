@@ -180,6 +180,54 @@ export default function CabinetBiddingDashboard() {
   const [handlePrice, setHandlePrice] = useState(2.75);
   const [discountPct, setDiscountPct] = useState(0);
 
+  const applyBrandFinishSelection = useCallback((brandName, finishName = "") => {
+    const brand = brands.find((b) => b.name === brandName);
+    if (!brand) return;
+    setSelectedBrand(brand.name);
+    setFinishes(brand.finishes);
+    const chosenFinish = finishName && brand.finishes.includes(finishName)
+      ? finishName
+      : (brand.finishes[0] || "");
+    setSelectedFinish(chosenFinish);
+  }, [brands]);
+
+  const detectBrandFinishFromText = useCallback((rawText) => {
+    if (!rawText || !brands.length) return { brand: "", finish: "" };
+
+    const textUpper = rawText.toUpperCase();
+    let brand = "";
+    if (/(FRAMELESS|ALBERT|IMPRESS)/i.test(textUpper)) {
+      brand = "Frameless";
+    } else if (/(FRAMED|HCI)/i.test(textUpper)) {
+      brand = "Framed";
+    }
+
+    const findFinishInBrand = (brandName) => {
+      const b = brands.find((x) => x.name === brandName);
+      if (!b) return "";
+      // Longest first prevents partial-name mismatches.
+      const ordered = [...b.finishes].sort((a, c) => c.length - a.length);
+      return ordered.find((f) => textUpper.includes(String(f).toUpperCase())) || "";
+    };
+
+    let finish = "";
+    if (brand) {
+      finish = findFinishInBrand(brand);
+      return { brand, finish };
+    }
+
+    // Fallback: infer brand from a uniquely matched finish name.
+    const framelessFinish = findFinishInBrand("Frameless");
+    const framedFinish = findFinishInBrand("Framed");
+    if (framelessFinish && !framedFinish) {
+      return { brand: "Frameless", finish: framelessFinish };
+    }
+    if (framedFinish && !framelessFinish) {
+      return { brand: "Framed", finish: framedFinish };
+    }
+    return { brand: "", finish: "" };
+  }, [brands]);
+
   // ── Load Brands on Mount ───────────────────────────────────────
   useEffect(() => {
     fetch(`${API_BASE}/api/brands`)
@@ -297,19 +345,23 @@ export default function CabinetBiddingDashboard() {
         throw new Error(err.detail || "Upload failed");
       }
       const data = await res.json();
+      const detected = detectBrandFinishFromText(data.raw_text || "");
+      if (detected.brand) {
+        applyBrandFinishSelection(detected.brand, detected.finish);
+      }
       if (data.sku_lines && data.sku_lines.length > 0) {
         setSkuText(data.sku_lines.join("\n"));
         setParseMeta({
           totalFound: data.total_found || 0,
           uniqueSkus: Object.keys(data.found_skus || {}).length,
-          method: `${data.method || "AI Extraction"}${data.parsed_sources ? ` • ${data.parsed_sources} file(s)` : ""}`,
+          method: `${data.method || "AI Extraction"}${data.parsed_sources ? ` • ${data.parsed_sources} file(s)` : ""}${detected.brand ? ` • ${detected.brand}${detected.finish ? ` / ${detected.finish}` : ""} auto-detected` : ""}`,
         });
         setParseStatus("success");
       } else {
         setParseMeta({
           totalFound: data.total_found || 0,
           uniqueSkus: 0,
-          method: `${data.method || "Unknown"}${data.parsed_sources ? ` • ${data.parsed_sources} file(s)` : ""}`,
+          method: `${data.method || "Unknown"}${data.parsed_sources ? ` • ${data.parsed_sources} file(s)` : ""}${detected.brand ? ` • ${detected.brand}${detected.finish ? ` / ${detected.finish}` : ""} auto-detected` : ""}`,
         });
         setParseStatus("empty");
       }
@@ -319,7 +371,7 @@ export default function CabinetBiddingDashboard() {
       setParseStatus("error");
       setTimeout(() => setParseStatus(null), 3000);
     }
-  };
+  }, [detectBrandFinishFromText, applyBrandFinishSelection]);
 
   const handleDrop = (e) => {
     e.preventDefault();

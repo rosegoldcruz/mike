@@ -346,7 +346,7 @@ def get_brands():
     """Return available brands and their finishes."""
     return {
         "brands": [
-            {"name": "Frameless", "label": "Frameless (Albert)", "finishes": ALBERT_FINISHES},
+            {"name": "Frameless", "label": "Frameless (Albert Impress)", "finishes": ALBERT_FINISHES},
             {"name": "Framed", "label": "Framed (HCI)", "finishes": HCI_FINISHES},
         ]
     }
